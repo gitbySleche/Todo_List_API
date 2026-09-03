@@ -24,7 +24,7 @@ def validate_email(email):
 
 def checkdb_for_email(email, cursor):
 
-    cursor.execute('SELECT password, email FROM users WHERE email = :email', {'email': email})
+    cursor.execute('SELECT password, email, id FROM users WHERE email = :email', {'email': email})
     return cursor.fetchone()
 
 @app.route('/register', methods=["POST"])
@@ -53,7 +53,7 @@ def register():
         token = secrets.token_urlsafe()
         new_id = cursor.lastrowid
         expires_at = datetime.now() + timedelta(hours=1)
-        cursor.execute('INSERT into tokens(token, user_id, expires_at) VALUES(:token, :id, :expires_at)', {'token':token, 'user_id':new_id, 'expires_at':expires_at.isoformat()})
+        cursor.execute('INSERT into tokens(token, user_id, expires_at) VALUES(:token, :user_id, :expires_at)', {'token':token, 'user_id':new_id, 'expires_at':expires_at.isoformat()})
         conn.commit()
         return jsonify({'token':token}), 200
 
@@ -77,14 +77,14 @@ def login():
         if email_check is not None:
 
             stored_hash = email_check[0]
-            submitted_pass = ph.hash(data['password'])
+            submitted_pass = data['password']
 
             try:
                 ph.verify(stored_hash, submitted_pass)
                 token = secrets.token_urlsafe()
-                new_id = cursor.lastrowid
+                new_id = email_check[2]
                 expires_at = datetime.now() + timedelta(hours=1)
-                cursor.execute('INSERT into tokens(token, user_id, expires_at) VALUES(:token, :id, :expires_at)', {'token':token, 'user_id':new_id, 'expires_at':expires_at.isoformat()}) #converts from datetime object to string
+                cursor.execute('INSERT into tokens(token, user_id, expires_at) VALUES(:token, :user_id, :expires_at)', {'token':token, 'user_id':new_id, 'expires_at':expires_at.isoformat()}) #converts from datetime object to string
                 conn.commit()
                 return jsonify({'token': token}), 200
 
@@ -108,12 +108,13 @@ def login():
 def create_to_dos():
 
     data = request.get_json()
+    token_submitted = request.headers.get('Authorization')
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
 
-        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':data['token']})
+        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
 
         if token is not None:
@@ -124,9 +125,10 @@ def create_to_dos():
                 return jsonify({'message':'Unauthorized'}), 401
 
             else:
-                cursor.execute('INSERT into todo(user_id, text, description) VALUES(:user_id, :text, :description)', {'user_id':token[0], 'text':data['title'], 'description':data['description']})
+                cursor.execute('INSERT into todo(user_id, title, description) VALUES(:user_id, :title, :description)', {'user_id':token[0], 'title':data['title'], 'description':data['description']})
                 conn.commit()
-                todo_query = cursor.execute('SELECT id, title, description FROM todo WHERE user_id = :user_id', {'user_id':token[0]})
+                cursor.execute('SELECT id, title, description FROM todo WHERE user_id = :user_id', {'user_id':token[0]})
+                todo_query = cursor.fetchone()
                 return jsonify({'id':todo_query[0], 'title':todo_query[1], 'description':todo_query[2]})
 
         else:
@@ -141,16 +143,17 @@ def create_to_dos():
 
               
     
-@app.route('todo/<int:todo_id>', methods=['PUT'])
+@app.route('/todo/<int:todo_id>', methods=['PUT'])
 def update_todo(todo_id):
 
     data = request.get_json()
+    token_submitted = request.headers.get('Authorization')
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
     
-        cursor.execute('SELECT user_id FROM tokens WHERE token = :token', {'token':data['token']})
+        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
 
         if token is not None: #check if token exists
@@ -162,7 +165,7 @@ def update_todo(todo_id):
 
             else:
                 cursor.execute('SELECT user_id FROM todo WHERE id = :id', {'id':todo_id})
-                todo_to_update = cursor.fetchone
+                todo_to_update = cursor.fetchone()
 
                 if todo_to_update is not None: #check if the todo the user wants to change, exists
 
@@ -170,7 +173,8 @@ def update_todo(todo_id):
 
                         cursor.execute('UPDATE todo SET title = :title, description = :description WHERE id = :id', {'title':data['title'], 'description':data['description'], 'id':todo_id})
                         conn.commit()
-                        todo_query = cursor.execute('SELECT id, title, description FROM todo WHERE id = :id', {'id':todo_id})
+                        cursor.execute('SELECT id, title, description FROM todo WHERE id = :id', {'id':todo_id})
+                        todo_query = cursor.fetchone()
                         return jsonify({'id':todo_query[0], 'title':todo_query[1], 'description':todo_query[2]})
 
                     else:
@@ -188,16 +192,16 @@ def update_todo(todo_id):
         conn.close()
 
 
-@app.route('todo/<int:todo_id>', methods=['DELETE'])
+@app.route('/todo/<int:todo_id>', methods=['DELETE'])
 def delete_todo(todo_id):
 
-    data = request.get_json()
+    token_submitted = request.headers.get('Authorization')
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
 
-        cursor.execute('SELECT user_id FROM tokens WHERE token = :token', {'token':data['token']})
+        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
     
         if token is not None: 
@@ -208,9 +212,23 @@ def delete_todo(todo_id):
                 return jsonify({'message':'Unauthorized'}), 401
 
             else:
-                cursor.execute('DELETE FROM todo WHERE rowid = :todo_id', {'todo_id':todo_id})
-                conn.commit()
-                return '', 204
+
+                cursor.execute('SELECT user_id FROM todo WHERE id = :id', {'id':todo_id})
+                todo_to_delete = cursor.fetchone()
+                
+                if todo_to_delete is not None: 
+                
+                    if token[0] == todo_to_delete[0]: 
+
+                        cursor.execute('DELETE FROM todo WHERE rowid = :todo_id', {'todo_id':todo_id})
+                        conn.commit()
+                        return '', 204
+
+                    else:
+                        return jsonify({'message':'Forbidden'}), 403
+
+                else:
+                    return jsonify({'error':'Todo doesn\'t exist'}), 400
 
         else:
             return jsonify({'message':'Unauthorized'}), 401
@@ -223,7 +241,7 @@ def delete_todo(todo_id):
         conn.close()
 
 
-@app.route('todo/<int:todo_id>', methods=['GET'])
+@app.route('/todo/<int:todo_id>', methods=['GET'])
 def get_todo(todo_id):
 
     data = request.get_json()
@@ -232,7 +250,7 @@ def get_todo(todo_id):
 
     try:
 
-        cursor.execute('SELECT user_id FROM tokens WHERE token = :token', {'token':data['token']})
+        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':data['token']})
         token = cursor.fetchone()
     
         if token is not None: 
@@ -243,6 +261,13 @@ def get_todo(todo_id):
                 return jsonify({'message':'Unauthorized'}), 401
 
             else:
+                cursor.execute('SELECT user_id FROM todo WHERE id = :id', {'id':todo_id})
+                todos_to_get = cursor.fetchone
+                                
+                if todos_to_get is not None: 
+                                
+                    if token[0] == todos_to_get[0]:
+                        pass 
                 
 
         else:
