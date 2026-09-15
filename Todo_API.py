@@ -8,7 +8,7 @@ import sqlite3
 app = Flask(__name__)
 
 def get_db_connection():
-    conn = sqlite3.connect('registered_users.db')
+    conn = sqlite3.connect('todos.db')
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -36,15 +36,23 @@ def register():
     ph = PasswordHasher()
 
     try:
-        if validate_email(data['email']) is False:
+
+        required_fields = ['name', 'email', 'password']
+
+        if not data or not all(field in data for field in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        elif validate_email(data['email']) is False:
             return jsonify({'error': 'invalid email.'}), 400
 
-        if checkdb_for_email(data['email'], cursor) is not None:
+        elif checkdb_for_email(data['email'], cursor) is not None:
             return jsonify({'error': 'email already registered.'}), 400
 
-        hashed_pass = ph.hash(data['password'])
-        cursor.execute('INSERT into users(name, email, password) VALUES(:name, :email, :password)', {'name':data['name'], 'email':data['email'], 'password':hashed_pass})
-        conn.commit()
+        else:
+            hashed_pass = ph.hash(data['password'])
+            cursor.execute('INSERT into users(name, email, password) VALUES(:name, :email, :password)', {'name':data['name'], 'email':data['email'], 'password':hashed_pass})
+            conn.commit()
+        
 
     except sqlite3.Error as e:
         return jsonify({'error': str(e)}), 400
@@ -55,7 +63,7 @@ def register():
         expires_at = datetime.now() + timedelta(hours=1)
         cursor.execute('INSERT into tokens(token, user_id, expires_at) VALUES(:token, :user_id, :expires_at)', {'token':token, 'user_id':new_id, 'expires_at':expires_at.isoformat()})
         conn.commit()
-        return jsonify({'token':token}), 200
+        return jsonify({'token':token}), 201
 
     finally:
         conn.close()
@@ -66,14 +74,20 @@ def login():
     data = request.get_json()
     conn = get_db_connection()
     cursor = conn.cursor()
-    email_check = checkdb_for_email(data['email'], cursor)
     ph = PasswordHasher()
 
     try:
 
-        if validate_email(data['email']) is False:
-            return jsonify({'error': 'invalid email.'}), 400
+        required_fields = ['email', 'password']
+        
+        if not data or not all(field in data for field in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 400    
 
+        elif validate_email(data['email']) is False:
+            return jsonify({'error': 'invalid email.'}), 400
+        
+        email_check = checkdb_for_email(data['email'], cursor)
+        
         if email_check is not None:
 
             stored_hash = email_check[0]
@@ -108,11 +122,21 @@ def login():
 def create_to_dos():
 
     data = request.get_json()
-    token_submitted = request.headers.get('Authorization')
+    auth_header = request.headers.get('Authorization')
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
+
+        required_fields = ['title', 'description']
+
+        if not data or not all(field in data for field in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        elif not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message':'Unauthorized'}), 401
+
+        token_submitted = auth_header.split(' ')[1]
 
         cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
@@ -129,7 +153,7 @@ def create_to_dos():
                 conn.commit()
                 cursor.execute('SELECT id, title, description FROM todo WHERE user_id = :user_id', {'user_id':token[0]})
                 todo_query = cursor.fetchone()
-                return jsonify({'id':todo_query[0], 'title':todo_query[1], 'description':todo_query[2]})
+                return jsonify({'id':todo_query[0], 'title':todo_query[1], 'description':todo_query[2]}), 201
 
         else:
             return jsonify({'message':'Unauthorized'}), 401
@@ -143,15 +167,25 @@ def create_to_dos():
 
               
     
-@app.route('/todo/<int:todo_id>', methods=['PUT'])
+@app.route('/todos/<int:todo_id>', methods=['PUT'])
 def update_todo(todo_id):
 
     data = request.get_json()
-    token_submitted = request.headers.get('Authorization')
+    auth_header = request.headers.get('Authorization')
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
+
+        required_fields = ['title', 'description']
+
+        if not data or not all(field in data for field in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        elif not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message':'Unauthorized'}), 401
+
+        token_submitted = auth_header.split(' ')[1]
     
         cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
@@ -192,14 +226,19 @@ def update_todo(todo_id):
         conn.close()
 
 
-@app.route('/todo/<int:todo_id>', methods=['DELETE'])
+@app.route('/todos/<int:todo_id>', methods=['DELETE'])
 def delete_todo(todo_id):
 
-    token_submitted = request.headers.get('Authorization')
+    auth_header = request.headers.get('Authorization')
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
+
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message':'Unauthorized'}), 401
+
+        token_submitted = auth_header.split(' ')[1]
 
         cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
@@ -241,16 +280,25 @@ def delete_todo(todo_id):
         conn.close()
 
 
-@app.route('/todo/<int:todo_id>', methods=['GET'])
-def get_todo(todo_id):
+@app.route('/todos', methods=['GET'])
+def get_todo():
 
-    data = request.get_json()
+    auth_header = request.headers.get('Authorization')
+    page = request.args.get('page', default=1, type=int)
+    limit = request.args.get('limit', default=10, type=int)
+    offset = (page - 1) * limit #how many rows to skip before to start returning results, i.e: in 200 rows, show the last 10 which is page=20, limit=10 (20-1)*10=190, skip the first 190 rows
     conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     try:
 
-        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':data['token']})
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message':'Unauthorized'}), 401
+
+        token_submitted = auth_header.split(' ')[1]
+
+        cursor.execute('SELECT user_id, expires_at FROM tokens WHERE token = :token', {'token':token_submitted})
         token = cursor.fetchone()
     
         if token is not None: 
@@ -261,14 +309,15 @@ def get_todo(todo_id):
                 return jsonify({'message':'Unauthorized'}), 401
 
             else:
-                cursor.execute('SELECT user_id FROM todo WHERE id = :id', {'id':todo_id})
-                todos_to_get = cursor.fetchone
-                                
-                if todos_to_get is not None: 
-                                
-                    if token[0] == todos_to_get[0]:
-                        pass 
                 
+                cursor.execute('SELECT id, title, description FROM todo WHERE user_id = :user_id LIMIT :limit OFFSET :offset', {'user_id': token[0], 'limit': limit, 'offset': offset})
+                rows = cursor.fetchall()
+                todo_list = [dict(row) for row in rows]
+
+                cursor.execute('SELECT COUNT(*) FROM todo WHERE user_id = :user_id', {'user_id': token[0]})
+                total = cursor.fetchone()[0]
+
+                return jsonify({'data': todo_list, 'page': page, 'limit': limit, 'total': total}), 200
 
         else:
             return jsonify({'message':'Unauthorized'}), 401

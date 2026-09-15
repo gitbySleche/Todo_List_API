@@ -1,6 +1,6 @@
 import sqlite3 
 
-con = sqlite3.connect('registered_users.db')
+con = sqlite3.connect('todos.db')
 cursor = con.cursor()
 
 cursor.execute('CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT, email TEXT NOT NULL, password TEXT NOT NULL)')
